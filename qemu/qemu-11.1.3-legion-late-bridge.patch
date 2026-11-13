@@ -1,0 +1,48 @@
+--- a/hw/pci-host/q35.c
++++ b/hw/pci-host/q35.c
+@@ -544,11 +544,36 @@
+     }
+ };
+ 
++/*
++ * Keep Q35 visible to firmware. The host may switch only the PCI identity
++ * after firmware startup for a controlled notebook compatibility test.
++ */
++static bool mch_get_legion_ids(Object *obj, Error **errp)
++{
++    PCIDevice *d = PCI_DEVICE(obj);
++
++    return pci_get_word(d->config + PCI_DEVICE_ID) == 0x4637;
++}
++
++static void mch_set_legion_ids(Object *obj, bool enabled, Error **errp)
++{
++    PCIDevice *d = PCI_DEVICE(obj);
++
++    pci_set_word(d->config + PCI_DEVICE_ID,
++                 enabled ? 0x4637 : PCI_DEVICE_ID_INTEL_P35_MCH);
++    pci_set_word(d->config + PCI_SUBSYSTEM_VENDOR_ID,
++                 enabled ? 0x17aa : PCI_SUBVENDOR_ID_REDHAT_QUMRANET);
++    pci_set_word(d->config + PCI_SUBSYSTEM_ID,
++                 enabled ? 0x3801 : PCI_SUBDEVICE_ID_QEMU);
++}
++
+ static void mch_reset(DeviceState *qdev)
+ {
+     PCIDevice *d = PCI_DEVICE(qdev);
+     MCHPCIState *mch = MCH_PCI_DEVICE(d);
+ 
++    mch_set_legion_ids(OBJECT(qdev), false, NULL);
++
+     pci_set_quad(d->config + MCH_HOST_BRIDGE_PCIEXBAR,
+                  MCH_HOST_BRIDGE_PCIEXBAR_DEFAULT);
+ 
+@@ -691,6 +716,8 @@
+     k->config_write = mch_write_config;
+     device_class_set_legacy_reset(dc, mch_reset);
+     device_class_set_props(dc, mch_props);
++    object_class_property_add_bool(klass, "x-legion-host-bridge-ids",
++                                   mch_get_legion_ids, mch_set_legion_ids);
+     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
+     dc->desc = "Host bridge";
+     dc->vmsd = &vmstate_mch;

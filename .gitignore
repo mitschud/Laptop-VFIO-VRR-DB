@@ -1,0 +1,10 @@
+__pycache__/
+build/
+*.aml
+*.bin
+*.dat
+*.fd
+*.img
+*.raw
+*.qcow2
+*.xml

@@ -1,0 +1,99 @@
+DefinitionBlock ("", "SSDT", 2, "LNVVM", "VRRTRACE", 2)
+{
+    External (\_SB.NPCF.ACST, MethodObj)
+    Scope (\_SB)
+    {
+        // This port exists only inside QEMU's dedicated debugcon, never host IO.
+        OperationRegion (VIOP, SystemIO, 0x0505, One)
+        Field (VIOP, ByteAcc, NoLock, Preserve) { VOUT, 8 }
+        Method (VHEX, 1, Serialized)
+        {
+
+            Local0 = 28
+            While (Local0 <= 28) {
+                Local1 = ((Arg0 >> Local0) & 0x0F)
+                If (Local1 < 10) { VOUT = (Local1 + 0x30) }
+                Else { VOUT = (Local1 + 0x37) }
+                Local0 -= 4
+            }
+        }
+        Device (ADP0)
+        {
+            Name (_HID, "ACPI0003")
+            Name (_UID, Zero)
+            Method (_STA, 0) { Return (0x0F) }
+            Method (_PSR, 0) { VOUT = 0x50; VOUT = 0x0A; Return (\_SB.NPCF.ACST ()) }
+            Method (_INI, 0) { VOUT = 0x41; VOUT = 0x0A }
+        }
+    }
+    External (\_SB.PCI0.S15.S00, DeviceObj)
+    Scope (\_SB.PCI0.S15.S00)
+    {
+        Name (GKEY, Buffer () { @GSV2@ })
+        Name (GDAT, Buffer () { @GDR1@ })
+        Method (_DSM, 4, Serialized)
+        {
+            \_SB.VOUT = 0x44
+            \_SB.VHEX (Arg1)
+            \_SB.VOUT = 0x20
+            \_SB.VHEX (Arg2)
+            \_SB.VOUT = 0x20
+            \_SB.VHEX (ObjectType (Arg3))
+            If (ObjectType (Arg3) == 3) {
+                \_SB.VOUT = 0x20
+                \_SB.VHEX (SizeOf (Arg3))
+                Local6 = Zero
+                While ((Local6 < SizeOf (Arg3)) && (Local6 < 16)) {
+                    \_SB.VOUT = 0x20
+                    \_SB.VHEX (DerefOf (Index (Arg3, Local6)))
+                    Increment (Local6)
+                }
+            }
+            \_SB.VOUT = 0x0A
+
+            If (Arg0 != ToUUID ("d4a50b75-65c7-46f7-bfb7-41514cea0244"))
+            {
+                \_SB.VOUT = 0x55
+                If (ObjectType (Arg0) == 3)
+                {
+                    If (SizeOf (Arg0) == 16)
+                    {
+                        Local6 = Zero
+                        While (Local6 < 16)
+                        {
+                            \_SB.VOUT = 0x20
+                            \_SB.VHEX (DerefOf (Index (Arg0, Local6)))
+                            Increment (Local6)
+                        }
+                    }
+                }
+                \_SB.VOUT = 0x0A
+                Return (Buffer () { 0x00 })
+            }
+            If (Arg1 != 0x0102) { \_SB.VOUT = 0x56; \_SB.VOUT = 0x0A; Return (0x80000002) }
+            If (Arg2 == Zero) { \_SB.VOUT = 0x53; \_SB.VOUT = 0x0A; Return (Buffer () { @NBCI_MASK@ }) }
+            If (Arg2 == 0x14)
+            {
+                \_SB.VOUT = 0x42
+                \_SB.VOUT = 0x0A
+                Return (Package (0x20)
+                {
+                    @NBCI_BACKLIGHT@
+                })
+            }
+            If (Arg2 == 0x10)
+            {
+                If (ObjectType (Arg3) == 0x03)
+                {
+                    If (SizeOf (Arg3) >= 4)
+                    {
+                        CreateWordField (Arg3, 2, OTYP)
+                        If (OTYP == 0x564B) { \_SB.VOUT = 0x4B; \_SB.VOUT = 0x0A; Return (GKEY) }
+                        If (OTYP == 0x4452) { \_SB.VOUT = 0x52; \_SB.VOUT = 0x0A; Return (GDAT) }
+                    }
+                }
+            }
+            Return (0x80000002)
+        }
+    }
+}
