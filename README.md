@@ -5,7 +5,7 @@ A working configuration for a Windows KVM guest driving the laptop's physical in
 | Feature | Change that made it available | Observed result |
 | --- | --- | --- |
 | Dynamic Boost | Expose the laptop's ACPI NVPCF interface in the guest and feed it live host data over an emulated serial link. | NVIDIA Control Panel reported **Dynamic Boost: Yes**. Wattage redistribution under a controlled load remains unmeasured. |
-| G-SYNC on the internal eDP panel | Deliver the original panel EDID and OEM NVIDIA display responses in guest ACPI, then switch the emulated Q35 host bridge's PCI IDs at Windows kernel startup. | NVIDIA's firmware key check passed, **Set up G-SYNC** appeared, and NVAPI reported VRR supported, capable and possible. The recorded desktop sample had VRR active/enabled false. Verify active refresh during a game. |
+| G-SYNC on the internal eDP panel | Deliver the original panel EDID and OEM NVIDIA display responses in guest ACPI, then switch the emulated Q35 host bridge's PCI IDs at Windows kernel startup. | NVIDIA's firmware key check passed, **Set up G-SYNC** appeared, and NVAPI reported VRR supported, capable and possible. Those display results were recorded with the original debugger-based switch. The live worker below successfully applies the same bridge IDs and corrects guest clock drift. G-SYNC visibility and active refresh still need confirmation with the live worker. |
 
 The live NVPCF bridge alone enabled Dynamic Boost on this machine. G-SYNC stayed unavailable until the late Q35 switch. Before the switch, the guest already reported the same full EDID as Linux, internal eDP, a working NVIDIA driver and AC power. Windows Settings still reported VRR unsupported after NVIDIA exposed G-SYNC. Use NVIDIA Control Panel and runtime checks for this setup.
 
@@ -114,24 +114,38 @@ Select the separate executable in `<devices><emulator>` for the GPU handoff. Add
 
 The physical Legion bridge at PCI `00:00.0` reports `8086:4637`, subsystem `17aa:3801`. Stock Q35 reports `8086:29c0`, subsystem `1af4:1100`. NVIDIA 621.01 compared all four ID words during its OEM firmware key check and rejected the stock bridge. With the late switch it accepted the key. The patch changes only the device and subsystem identity words and preserves Q35 register emulation. Keep the Q35 IDs through OVMF and on reset. Changing them at power-on prevented the earlier test from reaching the EFI probe.
 
-## 4. Start paused and run the host boot worker
+## 4. Start Windows normally and apply the live bridge switch
 
-With the NVPCF broker ready and the patched emulator selected for the GPU guest, start it paused. Set `VM` to your libvirt guest name. Run these from a terminal or service that remains available through the GPU handoff:
+Start the VM from a terminal or service that stays available during the GPU handoff. Set `VM` to your libvirt guest name and `GUIDE` to this repository's absolute path. Have the NVPCF broker ready and select the patched emulator for the GPU guest.
 
 ```sh
-sudo virsh -c qemu:///system start "$VM" --paused
-sudo env LEGION_VFIO_VM="$VM" python3 "$GUIDE/qemu/capture-late-bridge.py"
+sudo virsh -c qemu:///system start "$VM"
+sudo env LEGION_VFIO_VM="$VM" python3 "$GUIDE/qemu/live-bridge-switch.py"
 ```
 
-Run the worker immediately after starting paused. It uses a private host debugger socket to identify the Windows kernel, calls the patch's `qom-set` property `mch.x-legion-host-bridge-ids`, and traces the NVIDIA firmware key result for the tested driver. The worker closes the debugger and resumes the guest on exit. If it is interrupted and the guest remains paused, close the debugger with `virsh qemu-monitor-command "$VM" --hmp 'gdbserver none'` on the system connection, then use `virsh resume "$VM"`. In a single-GPU setup, put the paused start, worker and resume cleanup in the existing host handoff service. The guest PCI IDs reset on reboot, so the tested launcher reapplies the switch on each cold start.
+Run the [live worker](qemu/live-bridge-switch.py) immediately after the start command. It reads the running guest's IDT and kernel PE header through the QEMU monitor. Once it recognizes the tested Windows kernel, it sets `mch.x-legion-host-bridge-ids` through QMP and exits. Look for `windows_kernel_matched_live` followed by `legion_bridge_ids_enabled` in the worker output. For a rehearsal on the regular windowed VM, add `--probe-only` to locate the kernel without applying the switch.
 
-Look for `legion_bridge_ids_enabled` followed by `key_parser_return` with `parser_result: true`. In Windows, open **NVIDIA Control Panel → Display → Set up G-SYNC**, select the internal panel and apply. Enable the G-SYNC indicator and test a variable-frame-rate workload within the panel's VRR range. Check the panel refresh if you have a way to measure it. Use the indicator or measurement to confirm active VRR. Capability flags alone establish eligibility.
+In a single-GPU setup, place both commands in the host handoff service. The guest bridge IDs reset on reboot. Shut down Windows and start it again through the host launcher so it reruns the worker.
+
+In Windows, open **NVIDIA Control Panel → Display → Set up G-SYNC**, select the internal panel and apply. Enable the G-SYNC indicator, then test a variable-frame-rate workload in the panel's VRR range. Use the indicator or refresh measurement to confirm that VRR is active.
+
+### Windows clock drift with the original boot worker
+
+The earlier worker started the guest paused and repeatedly stopped and resumed it through GDB during Windows startup. On the reference machine, the Windows desktop and games then ran about 22% slow even when animation looked smooth and FPS was high. Keeping Windows running while performing the same late ID switch brought its clock back in step with the host.
+
+| Boot path | Linux elapsed | Windows QPC elapsed | QPC drift |
+| --- | ---: | ---: | ---: |
+| NVIDIA passthrough with the GDB worker | 41.582 s | 32.314 s | −22.2881% |
+| Stock QEMU, windowed | 32.794 s | 32.795 s | +0.0009% |
+| NVIDIA passthrough with the live worker | 32.879 s | 32.879 s | +0.0012% |
+
+The post-change difference was 0.40 ms, within the measurement's 1.38 ms uncertainty. The Windows uptime timer also stayed within 4 ms of the host. No Windows timer or affinity settings changed. The exact failure inside Windows' timer initialization remains undetermined. The [original GDB worker](qemu/capture-late-bridge.py) is retained for historical driver diagnostics.
 
 ## Troubleshooting and rollback
 
 - **NVPCF enumerates but Dynamic Boost stays unavailable.** Check that the broker reports AC and budgets available, that QEMU connected to its socket, and that the ACPI instance has a working driver. Check the guest AC adapter's online status.
-- **Windows boots but G-SYNC is missing.** Check for the bridge-switch event and successful key parse. Confirm that the passed GPU reports internal eDP and that Windows reads the full original EDID. Inspect the guest DSDT path if the OEM methods never run.
-- **Windows update or guest restart.** The supplied worker is tied to the tested Windows kernel, and parser instrumentation is tied to NVIDIA 621.01. Revalidate those checkpoints before relying on the patch with another build. Use a cold VM start to run the host worker again.
+- **Windows boots but G-SYNC is missing.** Check for both live-worker events and verify that the guest was cold-started. Confirm that the passed GPU reports internal eDP and that Windows reads the full original EDID. Inspect the guest DSDT path if the OEM methods never run.
+- **Windows update or guest restart.** The live worker is tied to the tested Windows kernel. Revalidate its IDT handler offsets and PE identity on a different kernel build. The archived GDB diagnostics are also tied to NVIDIA 621.01. Use a cold VM start to run the host worker again.
 - **Return to stock.** Shut down the guest, restore the saved XML and original QEMU emulator, and stop the NVPCF broker. The stock emulator remains installed.
 
 The patch and helper sources are included. Generate OEM firmware-derived tables and EDID locally. This guide covers an already working VFIO VM and has been validated on the listed Legion configuration.
